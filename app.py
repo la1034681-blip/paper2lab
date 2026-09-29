@@ -658,7 +658,9 @@ def _render_trust_panel(audit):
 
 
 # ================================================================ 导航栏 + Hero
-st.markdown("""
+# 注意这个 f 前缀是必需的：下方 hero-stat 里有 {len(STEPS)}。漏了它页面会
+# 原样显示「{len(STEPS)} 步」给用户看（线上实测抓到过，audit_placeholders.py 可复查）。
+st.markdown(f"""
 <div class="navbar">
   <div class="nav-logo">🔬 Paper<b>2</b>Lab</div>
   <div class="nav-links">
@@ -766,11 +768,22 @@ with st.expander("⚙️ 高级设置 · LLM 归因引擎 与 图像通道"):
         f"{(env_get('DEEPSEEK_MODEL') or 'deepseek-chat') if _dk else '未配置，用内置模板'}"
         f"（只生成解释文字，不影响结论）")
 
-    api_key = st.text_input("DeepSeek API Key（留空使用内置模板归因，演示不中断）",
-                            type="password", value=_dk)
+    # 安全：两个 key 输入框**刻意恒为空**（不预填服务端已配置的 key）。
+    # 理由：一旦写 value=<真key>，这个值就会随页面发到浏览器 —— 链接公开后，
+    # 任何人打开开发者工具（或点"眼睛"图标）都能直接读走你的 key。
+    # 留空不影响功能：下面 `api_key or None` 会回落到服务端环境变量
+    # （pipeline.py 里的 _env_get("DEEPSEEK_API_KEY")）。
+    api_key = st.text_input("DeepSeek API Key（留空即用服务端配置；都没有则用内置模板归因）",
+                            type="password", value="")
+    st.caption(
+        "服务端 DeepSeek key："
+        + ("已配置 ✅（出于安全不在页面显示，你也不需要在页面填）"
+           if _dk else "未配置 ⚠️（留空即用内置模板，演示不中断）"))
     st.caption("视觉模型 key（留空则图像通道关闭）：")
     vision_key = st.text_input("视觉模型 API Key（小米 MiMo / 通义千问 VL / 智谱 GLM-4V）",
-                               type="password", value=_vk)
+                               type="password", value="")
+    if _vk:
+        st.caption("服务端视觉 key：已配置 ✅（同样不在页面显示）")
     vc1, vc2 = st.columns(2)
     with vc1:
         vision_base_url = st.text_input("Base URL（可留空，按 key 自动识别）",
