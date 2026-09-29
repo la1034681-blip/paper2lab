@@ -1,0 +1,16 @@
+# Streamlit 运行配置（本地与云端共用）
+# 刻意保持"最保守": 不设任何会改变观感的主题项 —— 云端跑出来的样子必须与本地一致，
+# 否则你会遇到"本地好看、线上变了"的尴尬。base=light 是 Streamlit 的默认值，写上只为显式。
+
+[theme]
+base = "light"
+
+[server]
+headless = true
+# 论文 PDF 扫件可能较大（含图），放宽上传上限（默认 200MB，这里给到 300MB）
+maxUploadSize = 300
+# 部署在反向代理域名后面时必须允许外部 host，否则 Streamlit 会拒绝外部请求
+enableCORS = true
+
+[browser]
+gatherUsageStats = false

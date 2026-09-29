@@ -1,0 +1,6 @@
+# 平台密钥模板之外的一切本地文件都不该进仓库
+.streamlit/secrets.toml
+__pycache__/
+*.pyc
+cache/
+.env
