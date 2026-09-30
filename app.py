@@ -15,6 +15,9 @@ import streamlit as st
 
 from paper2lab.envfile import get as env_get
 from paper2lab.envfile import load_env
+from paper2lab.llm import looks_multimodal as _looks_multimodal
+from paper2lab.llm import resolve_endpoint as _resolve_endpoint
+from paper2lab.llm import resolve_vision as _resolve_vision
 from paper2lab.execview import agent_panel_title as _agent_panel_title
 from paper2lab.execview import tool_outcome as _tool_outcome
 from paper2lab.housekeeping import format_report as _purge_report
@@ -743,64 +746,110 @@ if has_upload and use_demo:
 elif not has_upload and not use_demo:
     st.caption("请上传论文 PDF（代码 ZIP 可选），或打开演示数据开关")
 
-with st.expander("⚙️ 高级设置 · LLM 归因引擎 与 图像通道"):
-    # ---- 密钥状态: 如实说明「.env 里配了什么、当前实际会用什么」
+with st.expander("⚙️ 高级设置 · 模型 API 与 图像通道"):
+    # ---- 服务端（.env / Secrets）里配了什么：如实说明，但**绝不预填进页面**
+    _lk = env_get("LLM_API_KEY") or env_get("DEEPSEEK_API_KEY")
+    _lu = env_get("LLM_BASE_URL") or env_get("DEEPSEEK_BASE_URL")
+    _lm_env = env_get("LLM_MODEL") or env_get("DEEPSEEK_MODEL")
     _vk = env_get("VISION_API_KEY") or env_get("DASHSCOPE_API_KEY") or env_get("ZHIPUAI_API_KEY")
     _vu = env_get("VISION_BASE_URL")
     _vm = env_get("VISION_MODEL")
-    _dk = env_get("DEEPSEEK_API_KEY")
     if not _vm and _vu:
         _vm = {"xiaomimimo": "mimo-v2.5", "bigmodel": "glm-4v-plus",
                "dashscope": "qwen-vl-max"}.get(
             next((s for s in ("xiaomimimo", "bigmodel", "dashscope") if s in _vu), ""), "")
-    # 通道状态统一挪到下面两个 key 输入框之后渲染 —— 因为"已配置"与否必须把
-    # **页面输入**也算进去。只读环境变量会漏报：2026-09-30 实测页面填了 key、
-    # 审计确实读了图（可信度页显示"图像通道已启用（mimo-v2.5）"），
-    # 这里却显示"未配置"，两处自相矛盾。
-    st.caption(
-        f"归因引擎：DeepSeek · "
-        f"{(env_get('DEEPSEEK_MODEL') or 'deepseek-chat') if _dk else '未配置，用内置模板'}"
-        f"（只生成解释文字，不影响结论）")
-
+    # ============ ① 模型 API：任意 OpenAI 兼容模型 ============
+    # 口径（2026-09-30 用户定）：支持任意模型的 key，**并且必须填对应的 Base URL**。
+    # 不再按 key 前缀猜端点 —— 猜错会打到错误地址，而每个区域都要重试等待，
+    # 表现就是"非常慢"甚至像卡死，且很难看出根因。
+    st.markdown("**① 模型 API**　负责归因解释 / 排计划 / 补丁提议"
+                "（只生成文字解释，**不影响结论**）")
     # 安全：两个 key 输入框**刻意恒为空**（不预填服务端已配置的 key）。
     # 理由：一旦写 value=<真key>，这个值就会随页面发到浏览器 —— 链接公开后，
     # 任何人打开开发者工具（或点"眼睛"图标）都能直接读走你的 key。
-    # 留空不影响功能：下面 `api_key or None` 会回落到服务端环境变量
-    # （pipeline.py 里的 _env_get("DEEPSEEK_API_KEY")）。
-    api_key = st.text_input("DeepSeek API Key（留空即用服务端配置；都没有则用内置模板归因）",
+    # 留空不影响功能：`api_key or None` 会回落到服务端环境变量。
+    api_key = st.text_input("模型 API Key（任意 OpenAI 兼容模型；留空即用服务端配置）",
                             type="password", value="")
-    st.caption(
-        "服务端 DeepSeek key："
-        + ("已配置 ✅（出于安全不在页面显示，你也不需要在页面填）"
-           if _dk else "未配置 ⚠️（留空即用内置模板，演示不中断）"))
-    st.caption("视觉模型 key（留空则图像通道关闭）：")
-    vision_key = st.text_input("视觉模型 API Key（小米 MiMo / 通义千问 VL / 智谱 GLM-4V）",
-                               type="password", value="")
+    mc1, mc2 = st.columns(2)
+    with mc1:
+        llm_base_url = st.text_input("模型 Base URL（必填）", value="",
+                                     placeholder=_lu or "例如 https://api.deepseek.com")
+    with mc2:
+        llm_model = st.text_input("模型名（必填）", value="",
+                                  placeholder=_lm_env or "例如 deepseek-chat")
+    st.caption("服务端模型 key："
+               + ("已配置 ✅（出于安全不在页面显示，你也不需要在页面填）"
+                  if _lk else "未配置 ⚠️（留空即用内置模板，演示不中断）"))
+
+    # 实际生效值：页面输入 > 服务端(.env / Secrets) > DeepSeek 官方默认
+    _lk_eff, _lu_eff, _lm_eff = _resolve_endpoint(
+        (api_key or "").strip(), (llm_base_url or "").strip(), (llm_model or "").strip())
+    # 「填了 key 却没填 URL」必须当场说清 —— 否则会静默连到默认端点，排查全靠猜
+    if (api_key or "").strip() and not (llm_base_url or "").strip():
+        st.warning("已填模型 Key 但**未填 Base URL**，当前按 DeepSeek 官方端点处理："
+                   f"`{_lu_eff}`。若你用的是别家的模型，请补上它自己的 Base URL —— "
+                   "否则会一直连错地址（表现为极慢或全部失败）。", icon="⚠️")
+
+    # 多模态判定：按模型名自动给一个默认值，用户可手动覆盖。
+    # 只有"自动判定结果变了"时才覆盖勾选 —— 换模型就该重新判一次。
+    _mm_auto = _looks_multimodal(_lm_eff, _lu_eff)
+    if st.session_state.get("_p2l_mm_auto") != _mm_auto:
+        st.session_state["_p2l_mm_auto"] = _mm_auto
+        st.session_state["p2l_llm_multimodal"] = _mm_auto
+    llm_multimodal = st.checkbox(
+        "该模型本身可以读图（多模态）",
+        key="p2l_llm_multimodal",
+        help="勾选后读图直接复用①的模型 API，**不需要**再配视觉模型。"
+             f"按模型名 `{_lm_eff}` 自动判断为「{'支持' if _mm_auto else '不支持'}」，"
+             "可手动修改（这只是按名称猜，判断权在你）。")
+
+    # ============ ② 视觉读图通道：仅单模态模型需要 ============
+    st.markdown("**② 视觉读图通道**　只有①的模型**不能读图**时才需要"
+                "（Key 与 Base URL **成对填写**）")
+    vision_key = st.text_input(
+        "视觉模型 API Key（小米 MiMo / 通义千问 VL / 智谱 GLM-4V）",
+        type="password", value="")
     if _vk:
         st.caption("服务端视觉 key：已配置 ✅（同样不在页面显示）")
     vc1, vc2 = st.columns(2)
     with vc1:
-        vision_base_url = st.text_input("Base URL（可留空，按 key 自动识别）",
-                                        value=_vu)
+        vision_base_url = st.text_input("视觉 Base URL（必填）", value="",
+                                        placeholder=_vu or "例如 https://api.xiaomimimo.com/v1")
     with vc2:
-        vision_model = st.text_input("模型名（可留空）", value=_vm)
+        vision_model = st.text_input("视觉模型名（可留空）", value="",
+                                     placeholder=_vm or "例如 mimo-v2.5")
 
-    # 通道状态：必须把**页面输入**也算进来，否则会与「审计可信度」页自相矛盾。
-    # 优先级与 paper2lab/vision.py 一致：页面输入 > .env / 环境变量 / Secrets。
-    _vk_eff = (vision_key or "").strip() or _vk
-    _vm_eff = (vision_model or "").strip() or _vm
-    _vu_eff = (vision_base_url or "").strip() or _vu
-    if _vk_eff:
-        _vendor = ("小米 MiMo" if "xiaomimimo" in (_vu_eff or "")
-                   or _vk_eff.startswith(("sk-", "tp-", "ttp-")) else "视觉大模型")
-        _from_page = bool((vision_key or "").strip())
-        st.success(
-            f"**视觉读图通道：已配置 ✅**　{_vendor} · `{_vm_eff or '自动识别'}`"
-            f"　来源：{'页面输入' if _from_page else '.env / 环境变量 / Secrets'}",
-            icon="✅")
+    # ---- 读图通道判定：交给 paper2lab.llm.resolve_vision（纯函数，分支都可独立验证）。
+    #      必须把**页面输入**也算进来，否则会与「审计可信度」页自相矛盾
+    #      （2026-09-30 实测：页面填了 key、审计确实读了图，这里却报"未配置"）。
+    #      口径：页面意图 > 服务端默认；**Key 与 Base URL 成对才算配置**（不猜端点）；
+    #      多模态模型可复用①的模型 API 读图，单模态则必须单独配视觉 API。
+    _vc = _resolve_vision(
+        page_key=vision_key, page_url=vision_base_url, page_model=vision_model,
+        env_key=_vk, env_url=_vu, env_model=_vm,
+        env_key_has_known_url=bool(env_get("DASHSCOPE_API_KEY")
+                                   or env_get("ZHIPUAI_API_KEY")),
+        llm_key=_lk_eff, llm_url=_lu_eff, llm_model=_lm_eff,
+        llm_multimodal=llm_multimodal)
+    _vk_eff = _vc["key"] if _vc["ok"] else ""
+    _vu_eff = _vc["url"] if _vc["ok"] else ""
+    _vm_eff = _vc["model"] if _vc["ok"] else ""
+    _vision_from_llm = bool(_vc["ok"] and _vc["from_llm"])
+
+    if _vc["ok"] and _vision_from_llm:
+        st.success(f"**视觉读图通道：已配置 ✅**　复用①的模型 API（多模态）"
+                   f"· `{_vm_eff}`　模型自带读图能力，无需单独的视觉 key", icon="✅")
+    elif _vc["ok"]:
+        st.success(f"**视觉读图通道：已配置 ✅**　`{_vm_eff or '自动识别'}`"
+                   f"　来源：{_vc['source']}", icon="✅")
     else:
-        st.warning("**视觉读图通道：未配置 ⚠️**　图片表格 / 扫描页不参与审计"
-                   "（未读区域会在「审计可信度」页列出）", icon="⚠️")
+        st.warning(f"**视觉读图通道：无法读图 ⚠️**　{_vc['reason']} —— 图片 / 表格 / 扫描页"
+                   "不参与审计（未读区域会在「审计可信度」页列出）。"
+                   "解决：勾选①的「该模型本身可以读图」，"
+                   "或按成对填写②的视觉 Key 与 Base URL。", icon="⚠️")
+    if _vc.get("warning"):
+        # 例：既勾了多模态、又在②填了半个视觉配置 —— 不能静默忽略，要说清最终用了谁
+        st.caption(f"ℹ️ {_vc['warning']}")
     st.caption("读图上限与耗时预算（默认 0 = 全部读取、不限时；已读过的走缓存不重复计费）：")
     vd1, vd2 = st.columns(2)
     with vd1:
@@ -826,11 +875,11 @@ with st.expander("⚙️ 高级设置 · LLM 归因引擎 与 图像通道"):
 
 # 通道状态（只报功能名与状态，不解释机制）
 st.caption(
-    f"读图通道：{'已就绪（' + (_vm_eff or '自动识别') + '）' if _vk_eff else '未配置'}"
+    f"读图通道：{'已就绪（' + (_vm_eff or '自动识别') + '）' if _vk_eff else '无法读图'}"
     f"　｜　归因引擎："
-    f"{'DeepSeek · ' + (env_get('DEEPSEEK_MODEL') or 'deepseek-chat') if _dk else '内置模板'}"
+    f"{(f'{_lm_eff}（内置模板兜底）' if not _lk_eff else _lm_eff)}"
     f"　｜　决策引擎："
-    f"{'AI 参与排计划（agent 模式）' if _dk else '未配置 LLM，将回退规则版'}")
+    f"{'AI 参与排计划（agent 模式）' if _lk_eff else '未配置 LLM，将回退规则版'}")
 
 run = st.button("🚀 开 始 科 研 审 计", type="primary", use_container_width=True)
 
@@ -894,9 +943,17 @@ if run:
 
     audit, report_md = run_audit(pdf_path, code_path, user_results,
                                  api_key=api_key or None, progress=on_progress,
-                                 vision_key=vision_key or "",
-                                 vision_base_url=vision_base_url or "",
-                                 vision_model=vision_model or "",
+                                 # 模型 API 的端点与模型名（页面可填，任意 OpenAI 兼容模型）
+                                 llm_base_url=(llm_base_url or "").strip(),
+                                 llm_model=(llm_model or "").strip(),
+                                 # 读图用**已判定过的生效值**：单模态时是②里成对填的视觉配置，
+                                 # 多模态时是①的模型 API 本身（_vision_from_llm）。
+                                 # 直接用原始输入框会让"只填了 key 没填 URL"也偷偷生效。
+                                 vision_key=_vk_eff,
+                                 vision_base_url=_vu_eff,
+                                 vision_model=_vm_eff,
+                                 vision_source=("复用模型 API（多模态）" if _vision_from_llm
+                                                else ""),
                                  vision_max_regions=int(vision_max_regions),
                                  vision_budget_seconds=float(vision_budget),
                                  plan_mode=use_planner,
@@ -1079,12 +1136,14 @@ if "audit" in st.session_state:
                     st.caption(f"⛔ {_p.display} —— {_p.refuse_reason}")
 
     _lm = r.get("llm_mode")
+    # 模型名如实显示：换过模型就不能还写 DeepSeek（readiness["llm_model"] 由 toolbox 写入）
+    _lm_name = r.get("llm_model") or "模型 API"
     if _lm == "deepseek":
         _rc, _ch = r.get("llm_real_calls", 0), r.get("llm_cache_hits", 0)
-        _llm_label = f"DeepSeek API（真实调用 {_rc} 条" + (
+        _llm_label = f"{_lm_name}（真实调用 {_rc} 条" + (
             f" · 缓存命中 {_ch} 条）" if _ch else "）")
     elif _lm == "fallback":
-        _llm_label = (f"内置模板（DeepSeek 调用失败已降级："
+        _llm_label = (f"内置模板（{_lm_name} 调用失败已降级："
                       f"{r.get('llm_error') or '未知原因'}）")
     else:
         _llm_label = "内置模板（未配置 API key）"

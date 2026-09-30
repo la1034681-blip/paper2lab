@@ -258,7 +258,7 @@ _LLM_PROMPT = """你在协助做论文复现审计。下面给出论文中包含
 
 
 def tool_llm_propose(kind: str, page_texts: list, api_key: str,
-                     model: str = "") -> ToolResult:
+                     model: str = "", base_url: str = "") -> ToolResult:
     """让 LLM 从正文里提议取值——**它只是提议**, 必须过 gate(回原文核对)才能入库。"""
     t0 = time.time()
     cost = {"llm_calls": 0, "vision_calls": 0, "seconds": 0.0}
@@ -288,7 +288,8 @@ def tool_llm_propose(kind: str, page_texts: list, api_key: str,
     from .llm import ask_json
     data, _note = ask_json(
         _LLM_PROMPT.format(disp=disp, excerpts="\n".join(excerpts)[:4000]),
-        api_key, mode=f"propose-{kind}", max_tokens=400)
+        api_key, mode=f"propose-{kind}", max_tokens=400,
+        base_url=base_url, model=model)
     # 缓存命中不产生费用，就不该扣 LLM 预算（如实统计）
     cost["llm_calls"] = 0 if "缓存命中" in _note else 1
     cost["seconds"] = time.time() - t0

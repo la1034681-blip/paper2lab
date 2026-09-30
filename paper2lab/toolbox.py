@@ -51,6 +51,10 @@ class Job:
     code_path: str = ""
     user_results: Optional[dict] = None
     api_key: str = ""
+    # 模型 API 的端点与模型名（2026-09-30）：页面可填，让用户换任何 OpenAI 兼容模型。
+    # 留空则回落 .env / 环境变量 / 官方默认，**老调用点行为不变**。
+    llm_base_url: str = ""
+    llm_model: str = ""
     force_mock: bool = False
     vision_kwargs: dict = field(default_factory=dict)
     vision_max_regions: Optional[int] = None
@@ -77,6 +81,7 @@ class Job:
     llm_cache_hits: int = 0
     llm_error: str = ""
     llm_shard: dict = field(default_factory=dict)      # 归因的分片并发记录
+    llm_model_used: str = ""          # 归因实际用的模型名（界面/报告如实显示）
     execution_log: dict = field(default_factory=dict)
     fingerprint: str = ""                                # 论文指纹(跨任务记忆索引)
     memory_lines: list = field(default_factory=list)      # 记忆命中的线索(只提示)
@@ -101,6 +106,8 @@ def _run_fill_missing(job: Job, tick: Callable[[str], None]) -> None:
     _agent = fill_missing(
         job.paper, job.pdf_path,
         llm_api_key=job.api_key or "",
+        llm_model=job.llm_model or "",
+        llm_base_url=job.llm_base_url or "",
         vision_kwargs=dict(job.vision_kwargs),
         enabled=job.enable_agent, **dict(job.agent_budget or {}))
     for k, ev in _agent.filled.items():
@@ -144,6 +151,7 @@ def _run_selfcheck(job: Job, tick: Callable[[str], None]) -> None:
 
     compute_readiness(job.audit)
     job.audit.readiness["llm_mode"] = job.llm_mode
+    job.audit.readiness["llm_model"] = job.llm_model_used
     job.audit.readiness["llm_real_calls"] = job.llm_real_calls
     job.audit.readiness["llm_cache_hits"] = job.llm_cache_hits
     job.audit.readiness["llm_error"] = job.llm_error
@@ -168,7 +176,9 @@ def _run_patch(job: Job, tick: Callable[[str], None]) -> None:
     from .patch import propose_patches
     patches = propose_patches(job.audit, job.rootcause or [], job.code_path,
                               max_items=8, llm=job.llm_patch,
-                              api_key=job.api_key, force_mock=job.force_mock)
+                              api_key=job.api_key, force_mock=job.force_mock,
+                              base_url=job.llm_base_url or "",
+                              model=job.llm_model or "")
     job.patches = patches
     job.audit.patches = patches
     tick("补丁草案")

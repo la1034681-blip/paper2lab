@@ -245,7 +245,9 @@ def _llm_refine(job: Job, base: Plan, *, proposal: Optional[dict] = None) -> Pla
     if proposal is None:
         proposal, note = ask_json(_llm_prompt(job, base), job.api_key,
                                   mode="plan", max_tokens=900,
-                                  force_mock=job.force_mock)
+                                  force_mock=job.force_mock,
+                                  base_url=getattr(job, "llm_base_url", "") or "",
+                                  model=getattr(job, "llm_model", "") or "")
     if not isinstance(proposal, dict) or not isinstance(proposal.get("decisions"), list):
         base.notes.insert(0, f"🧠 AI 排计划未生效（{note}）—— 已回退规则版计划")
         return base

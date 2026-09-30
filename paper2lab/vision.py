@@ -314,6 +314,7 @@ def analyze_images(pdf_path: str, max_regions: Optional[int] = None,
                    model: str = "", budget_seconds: Optional[float] = None,
                    only_pages: Optional[set] = None,
                    focus: Optional[list] = None,
+                   source_hint: str = "",
                    ) -> tuple[dict[str, list[Evidence]], dict]:
     """读图抽取参数。返回 (参数证据, 元信息)。
 
@@ -361,8 +362,10 @@ def analyze_images(pdf_path: str, max_regions: Optional[int] = None,
     mock = _mock_response()
     if not prov and not mock:
         meta["notes"].append(
-            f"发现 {len(regions)} 个图片/扫描区域, 但未配置视觉模型 key"
-            "(页面可填, 或设置 DASHSCOPE_API_KEY / ZHIPUAI_API_KEY / VISION_API_KEY), "
+            f"发现 {len(regions)} 个图片/扫描区域, 但当前**无法读图**："
+            "未配置视觉模型 key"
+            "(页面可填视觉 key, 或设置 DASHSCOPE_API_KEY / ZHIPUAI_API_KEY / VISION_API_KEY)；"
+            "若你的主模型本身是多模态(自带读图)，在页面勾选「该模型支持读图」即可复用它的 key。"
             "图像通道未启用——这些区域的内容未参与审计")
         return {}, meta
 
@@ -372,7 +375,7 @@ def analyze_images(pdf_path: str, max_regions: Optional[int] = None,
     else:
         k, u, m, src = prov
         # 注意: key 不写入 meta(审计结果可能被导出/展示), 只在本函数内使用
-        meta.update(enabled=True, mode="api", model=m, source=src)
+        meta.update(enabled=True, mode="api", model=m, source=(source_hint or src))
         call_key, call_base = k, u
 
     cache = _load_cache()

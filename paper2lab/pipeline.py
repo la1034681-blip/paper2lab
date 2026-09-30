@@ -30,11 +30,14 @@ def run_audit(
     code_path: str,
     user_results: Optional[dict] = None,
     api_key: Optional[str] = None,
+    llm_base_url: str = "",
+    llm_model: str = "",
     force_mock: bool = False,
     progress: Optional[Callable[[int, str], None]] = None,
     vision_key: str = "",
     vision_base_url: str = "",
     vision_model: str = "",
+    vision_source: str = "",
     vision_max_regions: Optional[int] = None,
     vision_budget_seconds: Optional[float] = None,
     enable_agent: bool = True,
@@ -55,6 +58,8 @@ def run_audit(
     llm_planner=True 让 **AI 排计划**（工具提议 + 程序盖章，见 planner._llm_refine）；
     llm_patch=True 让 **AI 给补丁提名目标**（提名必须落在已抽到的候选里，再由程序盖章，
     见 patch.propose_via_llm）。
+    `llm_base_url` / `llm_model`：**模型 API 的端点与模型名**（2026-09-30 起页面可填），
+    用于让用户换任意 OpenAI 兼容模型；留空则回落 .env / 环境变量 / DeepSeek 默认。
     **本函数的默认值是 False**（CLI 与验证脚本需要可预测的确定性基线）；
     **网页端默认 True** —— 界面就是 agent 入口：输入材料启动即由 AI 参与决定跑哪些环节
     （见 app.py 的「AI 参与决策」开关）。**规则版永远是兜底**：
@@ -67,10 +72,18 @@ def run_audit(
         user_results=user_results,
         # LLM key 与归因引擎同一口径: 调用方没传就回落到 .env / 环境变量。
         # (否则 CLI 入口不传 key 时, 归因能自己兜底、但抽取 Agent 的 LLM 级会整级不可用)
-        api_key=api_key or _env_get("DEEPSEEK_API_KEY") or "",
+        api_key=(api_key or _env_get("LLM_API_KEY")
+                 or _env_get("DEEPSEEK_API_KEY") or ""),
+        # 模型 API 的端点与模型名（页面可填）：留空则各调用点自己回落 .env / 默认，
+        # 因此**不传参的老调用点行为完全不变**。
+        llm_base_url=llm_base_url or "",
+        llm_model=llm_model or "",
         force_mock=force_mock,
         vision_kwargs={"api_key": vision_key, "base_url": vision_base_url,
                        "model": vision_model,
+                       # 让「审计可信度」页如实标注来源（"复用模型 API（多模态）"）；
+                       # 传空则用 vision.py 自己的判定，行为不变。
+                       "source_hint": vision_source,
                        "budget_seconds": vision_budget_seconds},
         vision_max_regions=vision_max_regions,
         enable_agent=enable_agent,

@@ -27,6 +27,128 @@ CACHE_PATH = Path(__file__).resolve().parent.parent / "cache" / "llm_cache.json"
 _DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 _DEEPSEEK_MODEL = "deepseek-chat"
 
+# ---- 通用「模型 API」解析（2026-09-30）--------------------------------------
+# 原先页面只有一个 "DeepSeek API Key"，端点与模型名写死在 .env —— 用户换不了别的模型。
+# 现在页面可直接填 Base URL / 模型名，解析顺序（**页面输入 > 通用名 > DeepSeek 名 > 默认**）：
+#   key : 页面输入 → LLM_API_KEY    → DEEPSEEK_API_KEY
+#   url : 页面输入 → LLM_BASE_URL   → DEEPSEEK_BASE_URL → 官方
+#   name: 页面输入 → LLM_MODEL      → DEEPSEEK_MODEL    → deepseek-chat
+# 保留 DEEPSEEK_* 是为了**向后兼容**：老配置（.env / Secrets）不改也照旧生效。
+
+# 模型名里出现这些片段 = 该模型自带视觉能力（可读图）
+_MULTIMODAL_HINTS = (
+    "-vl", "vl-", "vision", "-4v", "4v-", "glm-4v", "qwen-vl", "qwen2-vl", "qwen2.5-vl",
+    "gpt-4o", "gpt-4.1", "gpt-5", "o4-mini", "gemini", "claude-3", "claude-4",
+    "claude-sonnet", "claude-opus", "mimo-v", "internvl", "llava", "minicpm-v",
+    "step-1v", "ernie-4", "yi-vl", "pixtral", "phi-3.5-vision", "llama-3.2-vision",
+)
+
+
+def looks_multimodal(model: str, base_url: str = "") -> bool:
+    """按模型名**猜**它是否自带读图能力（多模态）。
+
+    ⚠️ 这只是"猜"：真正的能力判断权在用户手里（页面上有勾选框可覆盖）。
+    猜错的代价不对称 —— 猜成"不能读图"最多是多配一个视觉 key；
+    猜成"能读图"而实际不能，会导致读图调用全部失败。所以这里的规则**偏保守**：
+    只认明确的视觉模型命名特征，认不出就返回 False。
+    """
+    m = (model or "").strip().lower()
+    if not m:
+        return False
+    return any(h in m for h in _MULTIMODAL_HINTS)
+
+
+def resolve_endpoint(api_key: str = "", base_url: str = "",
+                     model: str = "") -> tuple[str, str, str]:
+    """解析出本次调用真正使用的 (api_key, base_url, model)。"""
+    from .envfile import get
+    k = (api_key or "").strip() or get("LLM_API_KEY") or get("DEEPSEEK_API_KEY") or ""
+    u = ((base_url or "").strip() or get("LLM_BASE_URL") or get("DEEPSEEK_BASE_URL")
+         or _DEEPSEEK_BASE_URL)
+    m = ((model or "").strip() or get("LLM_MODEL") or get("DEEPSEEK_MODEL")
+         or _DEEPSEEK_MODEL)
+    return k, u, m
+
+
+def resolve_vision(*, page_key: str = "", page_url: str = "", page_model: str = "",
+                   env_key: str = "", env_url: str = "", env_model: str = "",
+                   env_key_has_known_url: bool = False,
+                   llm_key: str = "", llm_url: str = "", llm_model: str = "",
+                   llm_multimodal: bool = False) -> dict:
+    """判定"读图通道"到底能不能用、用的是谁 —— **纯函数，便于逐分支验证**。
+
+    口径（2026-09-30 用户定）：
+      · 模型 API 与视觉 API 都必须 **Key + Base URL 成对填写**，程序**不按 key 前缀猜端点**
+        （猜错会打到错误地址，每个区域都要重试等待，表现为极慢甚至像卡死）；
+      · 多模态模型（自带读图）→ 无需视觉 API，直接复用模型 API；
+      · 单模态模型 → 必须单独配视觉 API，否则**如实提示"无法读图"**。
+
+    `env_key_has_known_url`：服务端用的是 DASHSCOPE_API_KEY / ZHIPUAI_API_KEY 这类
+    **厂商专用变量**时，端点可由程序确知，因此允许只填 key（向后兼容老配置）。
+
+    返回 dict：{ok, key, url, model, source, from_llm, reason, warning}
+      · ok=True  → 三项可用，source 说明"谁提供的"；warning 非空时表示**还有一处配置不完整**
+      · ok=False → reason 是**给用户看的**人话原因（不能是空串）
+
+    优先级（**页面意图 > 服务端默认**，与本项目一贯口径一致）：
+      1. 页面②成对填了 Key+URL          → 用它
+      2. 页面勾了「多模态」且①成对       → 复用①的模型 API
+      3. 页面②只填了 Key 没填 URL       → 失败（提示补 URL）
+      4. 服务端①成对 / 厂商专用变量      → 用它
+      5. 服务端只填了 Key 没填 URL      → 失败
+      6. 其余                          → 失败（说清是"没配"还是"模型不支持读图"）
+    """
+    pk, pu, pm = (page_key or "").strip(), (page_url or "").strip(), \
+        (page_model or "").strip()
+    ek, eu, em = (env_key or "").strip(), (env_url or "").strip(), \
+        (env_model or "").strip()
+    lk, lu, lm = (llm_key or "").strip(), (llm_url or "").strip(), \
+        (llm_model or "").strip()
+
+    # 页面②填了 key 却没填 url：无论最终走哪条路，这件事都要说出来（不能静默忽略）
+    _incomplete = "已填视觉模型 Key，但**没有填视觉 Base URL**（成对填写才生效，程序不猜端点）"
+
+    # ① 页面②成对填写 —— 意图最明确
+    if pk and pu:
+        return {"ok": True, "key": pk, "url": pu, "model": pm or em,
+                "source": "页面输入", "from_llm": False, "reason": "",
+                "warning": ""}
+
+    # ② 页面勾了「多模态」且①成对 → 复用①的模型 API
+    #    （刻意排在服务端之前：勾选框是**页面上的明确选择**，不该被 .env 里遗留的视觉 key 架空）
+    if llm_multimodal and lk and lu:
+        return {"ok": True, "key": lk, "url": lu, "model": lm,
+                "source": "复用模型 API（多模态）", "from_llm": True, "reason": "",
+                "warning": (_incomplete + "——该配置已被忽略，当前走①的模型 API"
+                            if (pk and not pu) else "")}
+
+    # ③ 页面②填了 key 却缺 URL → 失败（说清缺什么）
+    if pk and not pu:
+        return {"ok": False, "key": "", "url": "", "model": "", "source": "",
+                "from_llm": False, "reason": _incomplete, "warning": ""}
+
+    # ④ 服务端（.env / Secrets）：成对，或厂商专用变量（端点已知）
+    if ek and (eu or env_key_has_known_url):
+        return {"ok": True, "key": ek, "url": eu, "model": pm or em,
+                "source": ".env / 环境变量 / Secrets", "from_llm": False,
+                "reason": "", "warning": ""}
+    if ek and not eu and not env_key_has_known_url:
+        return {"ok": False, "key": "", "url": "", "model": "", "source": "",
+                "from_llm": False,
+                "reason": "服务端配了视觉 key 但**没有配 Base URL**"
+                          "（成对配置才生效，程序不猜端点）", "warning": ""}
+
+    # ⑤ 都不满足 —— 如实说明"为什么读不了图"
+    if not lk:
+        why = "未配置任何模型 API（① 为空，服务端也没配）"
+    elif llm_multimodal and not lu:
+        why = "①自称多模态但**没有填 Base URL**，无法复用它读图（成对填写才生效）"
+    else:
+        why = (f"①的模型 `{lm}` 不支持读图（未勾选「该模型本身可以读图」），"
+               "且未配置视觉模型 API")
+    return {"ok": False, "key": "", "url": "", "model": "", "source": "",
+            "from_llm": False, "reason": why, "warning": ""}
+
 _STATUS_ZH = {
     Status.INCONSISTENT: "不一致",
     Status.MISSING_IN_CODE: "代码中未找到",
@@ -183,18 +305,25 @@ def _mock_analysis(f: Finding) -> str:
 def _deepseek_model() -> str:
     """模型名优先取 .env 的 DEEPSEEK_MODEL(调用时读取, 不受导入顺序影响)。"""
     from .envfile import get
-    return get("DEEPSEEK_MODEL") or _DEEPSEEK_MODEL
+    return get("LLM_MODEL") or get("DEEPSEEK_MODEL") or _DEEPSEEK_MODEL
 
 
-def _call_deepseek(prompt: str, api_key: str, max_tokens: int = 300) -> str:
+def _call_deepseek(prompt: str, api_key: str, max_tokens: int = 300,
+                   base_url: str = "", model: str = "") -> str:
+    """调用 OpenAI 兼容的 chat.completions。
+
+    `base_url` / `model` 为空时回落到 .env / 环境变量 / 官方默认 —— 因此
+    **不传参的老调用点行为完全不变**。
+    """
     from openai import OpenAI
 
     from .envfile import get
-    client = OpenAI(api_key=api_key,
-                    base_url=get("DEEPSEEK_BASE_URL") or _DEEPSEEK_BASE_URL,
-                    timeout=30)
+    url = (base_url or "").strip() or get("LLM_BASE_URL") or get("DEEPSEEK_BASE_URL") \
+        or _DEEPSEEK_BASE_URL
+    name = (model or "").strip() or _deepseek_model()
+    client = OpenAI(api_key=api_key, base_url=url, timeout=30)
     resp = client.chat.completions.create(
-        model=_deepseek_model(),
+        model=name,
         messages=[{"role": "user", "content": prompt}],
         temperature=0,
         max_tokens=max_tokens,
@@ -232,7 +361,8 @@ def _extract_json(text: str) -> Optional[dict]:
 
 
 def ask_json(prompt: str, api_key: str, *, mode: str = "aux",
-             max_tokens: int = 800, force_mock: bool = False) -> tuple:
+             max_tokens: int = 800, force_mock: bool = False,
+             base_url: str = "", model: str = "") -> tuple:
     """一次性的 JSON 问答，返回 `(dict 或 None, 说明)`。**绝不抛异常。**
 
     调用方口径：拿不到（None）就回退确定性路径，并把说明如实写进日志/报告 ——
@@ -289,10 +419,15 @@ def ask_json(prompt: str, api_key: str, *, mode: str = "aux",
 class LLMAnalyzer:
     """归因分析器: 自动选择 真实API -> 缓存 -> Mock 三级降级。"""
 
-    def __init__(self, api_key: Optional[str] = None, force_mock: bool = False):
+    def __init__(self, api_key: Optional[str] = None, force_mock: bool = False, *,
+                 base_url: str = "", model: str = ""):
         from .envfile import get
         # 走 envfile: 兼容 .env 与系统环境变量(CLI 入口不必自己 load_env)
-        self.api_key = api_key or get("DEEPSEEK_API_KEY")
+        self.api_key = api_key or get("LLM_API_KEY") or get("DEEPSEEK_API_KEY")
+        # 端点与模型名：调用方没传就回落 .env / 环境变量 / 官方默认
+        self.base_url = (base_url or "").strip() or get("LLM_BASE_URL") \
+            or get("DEEPSEEK_BASE_URL") or _DEEPSEEK_BASE_URL
+        self.model = (model or "").strip() or _deepseek_model()
         self.force_mock = force_mock
         self.cache = _load_cache()
         self.mode = "mock"
@@ -300,6 +435,10 @@ class LLMAnalyzer:
         self.failed_calls = 0
         self.real_calls = 0       # 成功调用真实 API 的次数
         self.cache_hits = 0       # 命中缓存的条数(不产生 API 费用)
+        # 缓存命名空间（2026-09-30）：换模型必须换缓存 —— 否则从 A 模型切到 B 模型时
+        # 会命中 A 模型写下的文本，看起来像"新模型没生效"。
+        # 默认模型仍用 "deepseek" 前缀，**与历史缓存完全兼容**（老缓存不作废）。
+        self.cache_ns = "deepseek" if self.model == _DEEPSEEK_MODEL else f"llm:{self.model}"
         # 分片并发(第二期第四批)下的共享资源保护: cache / 计数 / mode 都会被多线程碰
         self._lock = threading.Lock()
         self.shard_report: dict = {}
@@ -314,9 +453,8 @@ class LLMAnalyzer:
             return ""
 
         prompt = _build_prompt(f)
-        with self._lock:
-            mode = self.mode
-        key = _cache_key(prompt, mode)
+        # 缓存命名空间含模型名 —— 换模型即换缓存，避免命中上一个模型写的文本。
+        key = _cache_key(prompt, self.cache_ns)
 
         # 1) 缓存命中(加锁: 分片并发下 cache 会被多个线程同时读写)
         with self._lock:
@@ -330,7 +468,8 @@ class LLMAnalyzer:
             last_err: Optional[Exception] = None
             for _ in range(3):  # 重试 3 次
                 try:
-                    text = _call_deepseek(prompt, self.api_key)
+                    text = _call_deepseek(prompt, self.api_key,
+                                          base_url=self.base_url, model=self.model)
                     if text:
                         with self._lock:      # 写缓存+落盘必须互斥, 否则并发下会互相覆盖
                             self.cache[key] = text

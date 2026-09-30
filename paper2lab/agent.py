@@ -97,6 +97,7 @@ def _to_evidence(cand: Candidate) -> Evidence:
 def fill_missing(paper: PaperInfo, pdf_path: str, *,
                  llm_api_key: str = "",
                  llm_model: str = "",
+                 llm_base_url: str = "",
                  vision_kwargs: Optional[dict] = None,
                  max_llm_calls: int = DEFAULT_MAX_LLM_CALLS,
                  max_vision_calls: int = DEFAULT_MAX_VISION_CALLS,
@@ -161,7 +162,8 @@ def fill_missing(paper: PaperInfo, pdf_path: str, *,
                     tr = ToolResult(ok=False, note="LLM 调用预算不足, 本级跳过")
                     skipped_for_budget = True
                 else:
-                    tr = tool_llm_propose(kind, page_texts, llm_api_key, llm_model)
+                    tr = tool_llm_propose(kind, page_texts, llm_api_key, llm_model,
+                                          llm_base_url)
                     used["llm"] += int(tr.cost.get("llm_calls", 0))
             else:
                 if used["vision"] >= max_vision_calls:

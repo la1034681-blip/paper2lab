@@ -472,7 +472,8 @@ def _llm_target_prompt(finding, trace, refinements) -> str:
 
 def propose_via_llm(finding, trace: TraceResult, code_path: str, *,
                     refinements: dict, proposal: Optional[dict] = None,
-                    api_key: str = "", force_mock: bool = False) -> PatchProposal:
+                    api_key: str = "", force_mock: bool = False,
+                    base_url: str = "", model: str = "") -> PatchProposal:
     """**AI 提名目标 + 程序盖章** —— 仅用于"值可信、缺的只是『选哪个』"的两类拒绝。
 
     允许 AI 参与的只有"选目标"这一件事：它不生成新代码、不改语义、不决定改不改。
@@ -493,7 +494,8 @@ def propose_via_llm(finding, trace: TraceResult, code_path: str, *,
         from .llm import ask_json
         proposal, note = ask_json(_llm_target_prompt(finding, trace, refinements),
                                   api_key, mode="patch", max_tokens=400,
-                                  force_mock=force_mock)
+                                  force_mock=force_mock,
+                                  base_url=base_url, model=model)
     if not isinstance(proposal, dict) or not proposal.get("ok"):
         res.refuse_kind = _K_NO_ROOTCAUSE
         res.refuse_reason = (f"AI 提名未生效（{note}）—— 保持原判定：不给补丁，"
@@ -572,6 +574,7 @@ class _ShadowEvidence:
 
 def propose_patches(audit, traces: list, code_path: str, *, max_items: int = 8,
                     llm: bool = False, api_key: str = "", force_mock: bool = False,
+                    base_url: str = "", model: str = "",
                     proposals: Optional[dict] = None) -> list:
     """对一批根因追查结果生成补丁草案（只为"值不一致"的结论出）。
 
@@ -616,7 +619,8 @@ def propose_patches(audit, traces: list, code_path: str, *, max_items: int = 8,
                 f, t, code_path,
                 refinements={"paper": _paper_cands(t.param_key)},
                 proposal=(proposals or {}).get(t.param_key),
-                api_key=api_key, force_mock=force_mock)
+                api_key=api_key, force_mock=force_mock,
+                base_url=base_url, model=model)
         out.append(p)
         if len(out) >= max_items:
             break
