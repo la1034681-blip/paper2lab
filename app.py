@@ -753,16 +753,10 @@ with st.expander("⚙️ 高级设置 · LLM 归因引擎 与 图像通道"):
         _vm = {"xiaomimimo": "mimo-v2.5", "bigmodel": "glm-4v-plus",
                "dashscope": "qwen-vl-max"}.get(
             next((s for s in ("xiaomimimo", "bigmodel", "dashscope") if s in _vu), ""), "")
-    if _vk:
-        _vendor = ("小米 MiMo" if (_vu and "xiaomimimo" in _vu)
-                   or _vk.startswith(("sk-", "tp-", "ttp-")) else "视觉大模型")
-        _src = ".env / 环境变量" if _vu else "环境变量（按 key 自动识别服务商）"
-        st.success(
-            f"**视觉读图通道：已配置 ✅**　{_vendor} · `{_vm or '自动识别'}`"
-            f"　来源：{_src}", icon="✅")
-    else:
-        st.warning("**视觉读图通道：未配置 ⚠️**　图片表格 / 扫描页不参与审计"
-                   "（未读区域会在「审计可信度」页列出）", icon="⚠️")
+    # 通道状态统一挪到下面两个 key 输入框之后渲染 —— 因为"已配置"与否必须把
+    # **页面输入**也算进去。只读环境变量会漏报：2026-09-30 实测页面填了 key、
+    # 审计确实读了图（可信度页显示"图像通道已启用（mimo-v2.5）"），
+    # 这里却显示"未配置"，两处自相矛盾。
     st.caption(
         f"归因引擎：DeepSeek · "
         f"{(env_get('DEEPSEEK_MODEL') or 'deepseek-chat') if _dk else '未配置，用内置模板'}"
@@ -790,6 +784,23 @@ with st.expander("⚙️ 高级设置 · LLM 归因引擎 与 图像通道"):
                                         value=_vu)
     with vc2:
         vision_model = st.text_input("模型名（可留空）", value=_vm)
+
+    # 通道状态：必须把**页面输入**也算进来，否则会与「审计可信度」页自相矛盾。
+    # 优先级与 paper2lab/vision.py 一致：页面输入 > .env / 环境变量 / Secrets。
+    _vk_eff = (vision_key or "").strip() or _vk
+    _vm_eff = (vision_model or "").strip() or _vm
+    _vu_eff = (vision_base_url or "").strip() or _vu
+    if _vk_eff:
+        _vendor = ("小米 MiMo" if "xiaomimimo" in (_vu_eff or "")
+                   or _vk_eff.startswith(("sk-", "tp-", "ttp-")) else "视觉大模型")
+        _from_page = bool((vision_key or "").strip())
+        st.success(
+            f"**视觉读图通道：已配置 ✅**　{_vendor} · `{_vm_eff or '自动识别'}`"
+            f"　来源：{'页面输入' if _from_page else '.env / 环境变量 / Secrets'}",
+            icon="✅")
+    else:
+        st.warning("**视觉读图通道：未配置 ⚠️**　图片表格 / 扫描页不参与审计"
+                   "（未读区域会在「审计可信度」页列出）", icon="⚠️")
     st.caption("读图上限与耗时预算（默认 0 = 全部读取、不限时；已读过的走缓存不重复计费）：")
     vd1, vd2 = st.columns(2)
     with vd1:
@@ -815,7 +826,7 @@ with st.expander("⚙️ 高级设置 · LLM 归因引擎 与 图像通道"):
 
 # 通道状态（只报功能名与状态，不解释机制）
 st.caption(
-    f"读图通道：{'已就绪（' + (_vm or '自动识别') + '）' if _vk else '未配置'}"
+    f"读图通道：{'已就绪（' + (_vm_eff or '自动识别') + '）' if _vk_eff else '未配置'}"
     f"　｜　归因引擎："
     f"{'DeepSeek · ' + (env_get('DEEPSEEK_MODEL') or 'deepseek-chat') if _dk else '内置模板'}"
     f"　｜　决策引擎："
