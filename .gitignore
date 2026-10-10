@@ -1,6 +1,31 @@
-# 平台密钥模板之外的一切本地文件都不该进仓库
-.streamlit/secrets.toml
+# ---- 千万别提交的东西 ----
+# 密钥：部署走平台 Secrets / 环境变量注入，.env 只留在本机
+.env
+.env.*
+!.env.example
+
+# 环境与缓存（.venv 有 500MB+，推上去没意义还可能被拒）
+.venv/
 __pycache__/
 *.pyc
 cache/
-.env
+.streamlit/secrets.toml
+
+# 与线上应用无关的本地产物
+output/
+_publish/
+_archive/
+.trash_tmp/
+.deploy/
+*.log
+
+# deploy/ 是 make_deploy.py 生成的**上线裁剪包**（自带独立 .git 与远端）
+# 它是生成物、且内容与根目录重复，因此不进本仓库
+deploy/
+
+# AI 助手的工作记忆（每日开发日志 / 自动化笔记）——属于工具数据，不是工程内容
+.workbuddy/
+
+# 测试集与报告产物（体积大、且只在本地跑回归时才需要）
+Paper2Lab测试集/
+Paper2Lab测试集_v2/

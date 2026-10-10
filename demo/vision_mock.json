@@ -1,0 +1,24 @@
+{
+  "params": [
+    {
+      "name": "learning rate",
+      "value": "3e-5",
+      "evidence_text": "learning rate = 3e-5"
+    },
+    {
+      "name": "batch size",
+      "value": "64",
+      "evidence_text": "batch size = 64"
+    },
+    {
+      "name": "num epochs",
+      "value": "50",
+      "evidence_text": "num epochs = 50"
+    },
+    {
+      "name": "dropout",
+      "value": "0.3",
+      "evidence_text": "dropout = 0.3"
+    }
+  ]
+}
